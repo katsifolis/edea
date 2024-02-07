@@ -41,6 +41,17 @@ impl Interconnect {
             }
             return;
         }
+
+        if let Some(_offset) = map::RAM_SIZE.contains(addr) {
+            println!("Unhandled write to RAM_SIZE register");
+            return;
+        }
+
+        if let Some(_offset) = map::CACHE_CONTROL.contains(addr) {
+            println!("Unhandled write to CACHE_CONTROL register");
+            return;
+        }
+
         panic!("unhandled store32 into address {:08X}", addr);
     }
 }

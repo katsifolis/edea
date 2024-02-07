@@ -14,3 +14,5 @@ impl Range {
 
 pub const BIOS: Range = Range(0xBFC0_0000, 512 * 1024);
 pub const MEMCONTROL: Range = Range(0x1f801000, 36);
+pub const RAM_SIZE: Range = Range(0x1f801060, 4);
+pub const CACHE_CONTROL: Range = Range(0xfffe0130, 4);
