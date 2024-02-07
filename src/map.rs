@@ -9,8 +9,8 @@ impl Range {
         } else {
             None
         }
-
     }
 }
 
 pub const BIOS: Range = Range(0xBFC0_0000, 512 * 1024);
+pub const MEMCONTROL: Range = Range(0x1f801000, 36);
