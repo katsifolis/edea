@@ -4,6 +4,9 @@ use crate::interconnect::Interconnect;
 pub struct Cpu {
     pc: u32,
 
+    /// Cop 0 register 12: Status Register
+    sr: u32,
+
     /// Next Instruction To be executed
     /// simulating the way ps1 works (branch delay slot)
     next_instruction: Instruction,
@@ -25,6 +28,7 @@ impl Cpu {
 
         Cpu {
             pc: 0xBFC00000,
+            sr: 0,
             next_instruction: Instruction(0x0),
             inter,
             regs,
@@ -54,6 +58,7 @@ impl Cpu {
         self.inter.load32(addr)
     }
 
+    /// Store
     fn store32(&self, addr: u32, val: u32) {
         self.inter.store32(addr, val)
     }
@@ -75,6 +80,11 @@ impl Cpu {
     }
 
     fn op_sw(&mut self, instruction: Instruction) {
+        if self.sr & 0x10000 != 0 {
+            println!("Ignoring store while cache is isolated");
+            return;
+        }
+
         let i: u32 = instruction.imm_se();
         let t: RegisterIndex = instruction.t();
         let s: RegisterIndex = instruction.s();
@@ -110,9 +120,54 @@ impl Cpu {
         self.set_reg(d, v);
     }
 
-    fn j(&mut self, instruction: Instruction) {
+    fn op_j(&mut self, instruction: Instruction) {
         let i: u32 = instruction.imm_jump();
         self.pc = (self.pc & 0xF0000000) | (i << 2);
+    }
+
+    fn op_cop0(&mut self, instruction: Instruction) {
+        match instruction.cop_opcode() {
+            0b00100 => self.op_mtc0(instruction),
+            _ => panic!("Unhandled cop0 instruction {}", instruction),
+        }
+    }
+
+    /// Move to CoProcessor 0
+    fn op_mtc0(&mut self, instruction: Instruction) {
+        let cpu_r = instruction.t();
+        let cop_r = instruction.d().0;
+
+        let v = self.reg(cpu_r);
+
+        match cop_r {
+            12 => self.sr = v,
+            n => panic!("Unhandled cop0 register: {:08X}", n),
+        }
+    }
+
+    /// Branch to immediate value `offset`.
+    fn branch(&mut self, offset: u32) {
+        // Offset immediates are always shifted two places to the right
+        // since `PC` addresses have to be aligned on 32bits at all time.
+        let offset = offset << 2;
+
+        let mut pc = self.pc;
+
+        pc = pc.wrapping_add(offset);
+
+        pc = pc.wrapping_sub(4);
+
+        self.pc = pc;
+    }
+
+    fn op_bne(&mut self, instruction: Instruction) {
+        let i = instruction.imm_se();
+        let s = instruction.s();
+        let t = instruction.t();
+
+        if self.reg(s) != self.reg(t) {
+            self.branch(i)
+        }
     }
 
     fn decode_and_execute(&mut self, instruction: Instruction) {
@@ -129,7 +184,9 @@ impl Cpu {
             0b001101 => self.op_ori(instruction),
             0b101011 => self.op_sw(instruction),
             0b001001 => self.op_addiu(instruction),
-            0b000010 => self.j(instruction),
+            0b000010 => self.op_j(instruction),
+            0b010000 => self.op_cop0(instruction),
+            0b000101 => self.op_bne(instruction),
             _ => panic!(
                 "Unhandled instruction {:08X} at PC -> {:04X}",
                 instruction.0, self.pc
@@ -177,6 +234,10 @@ impl Instruction {
 
     fn imm_jump(self) -> u32 {
         self.0 & 0x3ffffff
+    }
+
+    fn cop_opcode(self) -> u32 {
+        (self.0 >> 21) & 0x1f
     }
 }
 

@@ -1,13 +1,15 @@
-use std::{path::Path, fs::File, io::{ErrorKind, Read, Error}};
+use std::{
+    fs::File,
+    io::{Error, ErrorKind, Read},
+    path::Path,
+};
 
 pub struct Bios {
     data: Vec<u8>,
 }
 
 impl Bios {
-
     pub fn new(path: &Path) -> Result<Bios, Error> {
-
         // let start_time = Instant::now();
 
         let file = File::open(path)?;
@@ -20,11 +22,10 @@ impl Bios {
         //println!("The time was {}", elapsed_time.as_micros());
 
         if data.len() == BIOS_SIZE as usize {
-            Ok( Bios {data: data})
+            Ok(Bios { data })
         } else {
             Err(Error::new(ErrorKind::InvalidInput, "Invalid bios size!"))
         }
-
     }
 
     pub fn load32(&self, offset: u32) -> u32 {
@@ -36,7 +37,6 @@ impl Bios {
         let b3 = self.data[offset + 3] as u32;
 
         b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
-
     }
 }
 
