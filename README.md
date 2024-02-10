@@ -1,2 +1,1 @@
-# ultimecia-rs
-PS1 emulator in rust
+Attempt to a ps1 emulator in rust
