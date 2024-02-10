@@ -4,22 +4,18 @@ use std::{
     path::Path,
 };
 
+/// BIOS
 pub struct Bios {
     data: Vec<u8>,
 }
 
 impl Bios {
     pub fn new(path: &Path) -> Result<Bios, Error> {
-        // let start_time = Instant::now();
-
         let file = File::open(path)?;
 
         let mut data = Vec::with_capacity(BIOS_SIZE as usize);
 
         file.take(BIOS_SIZE).read_to_end(&mut data)?;
-
-        // let elapsed_time = start_time.elapsed();
-        //println!("The time was {}", elapsed_time.as_micros());
 
         if data.len() == BIOS_SIZE as usize {
             Ok(Bios { data })
@@ -40,4 +36,4 @@ impl Bios {
     }
 }
 
-const BIOS_SIZE: u64 = 512 * 1024;
+pub const BIOS_SIZE: u64 = 512 * 1024;

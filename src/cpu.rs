@@ -11,6 +11,14 @@ pub struct Cpu {
     /// simulating the way ps1 works (branch delay slot)
     next_instruction: Instruction,
 
+    /// 2nd set of regs used to emulate the load delay slot
+    /// accurately. They contain the output of the current
+    /// instruction
+    out_regs: [u32; 32],
+
+    /// Load initiated by the current instruction
+    load: (RegisterIndex, u32),
+
     // General Purpose Registres
     regs: [u32; 32],
 
@@ -31,6 +39,8 @@ impl Cpu {
             sr: 0,
             next_instruction: Instruction(0x0),
             inter,
+            out_regs: regs,
+            load: (RegisterIndex(0), 0),
             regs,
         }
     }
@@ -40,8 +50,8 @@ impl Cpu {
     }
 
     fn set_reg(&mut self, idx: RegisterIndex, val: u32) {
-        self.regs[idx.0 as usize] = val;
-        self.regs[0] = 0;
+        self.out_regs[idx.0 as usize] = val;
+        self.out_regs[0] = 0;
     }
 
     pub fn run_next_instruction(&mut self) {
@@ -49,9 +59,21 @@ impl Cpu {
         let instruction = self.next_instruction;
         self.next_instruction = Instruction(self.load32(pc));
         self.pc = pc.wrapping_add(4);
+
+        // Execute the pending load (if any, otherwise it will load
+        // $zero which is NOP). `set_reg` works only on `out_regs` so
+        // this operation won't be visible by the next instruction
+        let (reg, val) = self.load;
+        self.set_reg(reg, val);
+
+        // We reset the load to target register 0 for the next instruction
+        self.load = (RegisterIndex(0), 0);
         self.decode_and_execute(instruction);
 
-        println!("{}", instruction);
+        // Copy the output registers as input for the next instruction
+        self.regs = self.out_regs;
+
+        //println!("{}", instruction);
     }
 
     fn load32(&self, addr: u32) -> u32 {
@@ -59,7 +81,7 @@ impl Cpu {
     }
 
     /// Store
-    fn store32(&self, addr: u32, val: u32) {
+    fn store32(&mut self, addr: u32, val: u32) {
         self.inter.store32(addr, val)
     }
 
@@ -140,7 +162,17 @@ impl Cpu {
         let v = self.reg(cpu_r);
 
         match cop_r {
+            3 | 5 | 6 | 7 | 9 | 11 => {
+                if v != 0 {
+                    panic!("Unhandled write to cop0r{}", cop_r)
+                }
+            }
             12 => self.sr = v,
+            13 => {
+                if v != 0 {
+                    panic!("Unhandled write to CAUSE register.")
+                }
+            }
             n => panic!("Unhandled cop0 register: {:08X}", n),
         }
     }
@@ -170,11 +202,64 @@ impl Cpu {
         }
     }
 
+    fn op_addi(&mut self, instruction: Instruction) {
+        let i = instruction.imm_se() as i32;
+        let s = instruction.s();
+        let t = instruction.t();
+
+        let s = self.reg(s) as i32;
+
+        let v = match s.checked_add(i) {
+            Some(v) => v as u32,
+            None => panic!("ADDI Overflow"),
+        };
+
+        self.set_reg(t, v);
+    }
+
+    fn op_lw(&mut self, instruction: Instruction) {
+        if self.sr & 0x10000 != 0 {
+            println!("Ignoring load while cache is isolated");
+            return;
+        }
+
+        let i = instruction.imm_se();
+        let s = instruction.s();
+        let t = instruction.t();
+
+        let addr = self.reg(s).wrapping_add(i);
+
+        let v = self.load32(addr);
+
+        self.load = (t, v);
+    }
+
+    fn op_sltu(&mut self, instruction: Instruction) {
+        let d = instruction.d();
+        let s = instruction.s();
+        let t = instruction.t();
+
+        let v = self.reg(s) < self.reg(t);
+        self.set_reg(d, v as u32);
+    }
+
+    fn op_addu(&mut self, instruction: Instruction) {
+        let d = instruction.d();
+        let s = instruction.s();
+        let t = instruction.t();
+
+        let v = self.reg(s).wrapping_add(self.reg(t));
+
+        self.set_reg(d, v);
+    }
+
     fn decode_and_execute(&mut self, instruction: Instruction) {
         match instruction.func() {
             0b000000 => match instruction.subfunction() {
                 0b000000 => self.op_sll(instruction),
                 0b100101 => self.op_or(instruction),
+                0b101011 => self.op_sltu(instruction),
+                0b100001 => self.op_addu(instruction),
                 _ => panic!(
                     "Unhandled instruction {:08X} at PC -> {:04X}",
                     instruction.0, self.pc
@@ -187,6 +272,8 @@ impl Cpu {
             0b000010 => self.op_j(instruction),
             0b010000 => self.op_cop0(instruction),
             0b000101 => self.op_bne(instruction),
+            0b001000 => self.op_addi(instruction),
+            0b100011 => self.op_lw(instruction),
             _ => panic!(
                 "Unhandled instruction {:08X} at PC -> {:04X}",
                 instruction.0, self.pc

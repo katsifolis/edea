@@ -2,10 +2,12 @@ pub mod bios;
 pub mod cpu;
 pub mod interconnect;
 pub mod map;
+pub mod ram;
 
 use bios::Bios;
 use cpu::Cpu;
 use interconnect::Interconnect;
+use ram::Ram;
 use std::path::Path;
 
 fn main() {
@@ -19,7 +21,9 @@ fn main() {
 
     let bios = Bios::new(Path::new(&path)).unwrap();
 
-    let inter = Interconnect::new(bios);
+    let ram = Ram::new();
+
+    let inter = Interconnect::new(bios, ram);
 
     let mut cpu = Cpu::new(inter);
 
