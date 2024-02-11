@@ -12,8 +12,27 @@ impl Range {
     }
 }
 
-pub const BIOS: Range = Range(0xBFC0_0000, 512 * 1024);
-pub const MEMCONTROL: Range = Range(0x1f801000, 36);
+const REGION_MASK: [u32; 8] = [
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff,
+    0xffff_ffff, // KUSEG: 2048MB
+    0x7fff_ffff, // KSEG0
+    0x1fff_ffff, // KSEG1
+    0xffff_ffff, // KSEG2
+    0xffff_ffff,
+];
+
+pub fn mask_region(addr: u32) -> u32 {
+    let idx = (addr >> 29) as usize;
+    addr & REGION_MASK[idx]
+}
+
+pub const RAM: Range = Range(0x00000000, 2 * 1024 * 1024);
+pub const BIOS: Range = Range(0x1FC0_0000, 512 * 1024);
+pub const SYS_CONTROL: Range = Range(0x1f801000, 36);
 pub const RAM_SIZE: Range = Range(0x1f801060, 4);
 pub const CACHE_CONTROL: Range = Range(0xfffe0130, 4);
-pub const RAM: Range = Range(0xa0000000, 2 * 1024 * 1024);
+pub const SPU: Range = Range(0x1f801c00, 640);
+pub const EXPANSION_1: Range = Range(0x1f000000, 512 * 1024);
+pub const EXPANSION_2: Range = Range(0x1f802000, 66);
