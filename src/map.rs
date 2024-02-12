@@ -36,3 +36,4 @@ pub const CACHE_CONTROL: Range = Range(0xfffe0130, 4);
 pub const SPU: Range = Range(0x1f801c00, 640);
 pub const EXPANSION_1: Range = Range(0x1f000000, 512 * 1024);
 pub const EXPANSION_2: Range = Range(0x1f802000, 66);
+pub const IRQ_CONTROL: Range = Range(0x1f801070, 8);

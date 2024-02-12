@@ -121,6 +121,11 @@ impl Interconnect {
             return;
         }
 
+        if let Some(offset) = map::IRQ_CONTROL.contains(absolute_addr) {
+            println!("IRQ control: {:X} <- {:08X}", offset, val);
+            return;
+        }
+
         panic!(
             "unhandled store32 into absolute_address {:08X}",
             absolute_addr
