@@ -37,3 +37,4 @@ pub const SPU: Range = Range(0x1f801c00, 640);
 pub const EXPANSION_1: Range = Range(0x1f000000, 512 * 1024);
 pub const EXPANSION_2: Range = Range(0x1f802000, 66);
 pub const IRQ_CONTROL: Range = Range(0x1f801070, 8);
+pub const TIMERS: Range = Range(0x1F801100, 0x30);

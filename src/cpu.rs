@@ -7,6 +7,12 @@ pub struct Cpu {
     /// Cop 0 register 12: Status Register
     sr: u32,
 
+    /// HI register for div remainder and mul high result
+    hi: u32,
+
+    /// Low register for div quotient and mul low result
+    lo: u32,
+
     /// Next Instruction To be executed
     /// simulating the way ps1 works (branch delay slot)
     next_instruction: Instruction,
@@ -37,6 +43,8 @@ impl Cpu {
         Cpu {
             pc: 0xBFC00000,
             sr: 0,
+            hi: 0xcafecafe,
+            lo: 0xcafecafe,
             next_instruction: Instruction(0x0),
             inter,
             out_regs: regs,
@@ -145,7 +153,27 @@ impl Cpu {
         let d: RegisterIndex = instruction.d();
 
         let v = self.reg(t) << i;
-        self.set_reg(d, v)
+        self.set_reg(d, v);
+    }
+
+    fn op_sra(&mut self, instruction: Instruction) {
+        let i: u32 = instruction.shift();
+        let t: RegisterIndex = instruction.t();
+        let d: RegisterIndex = instruction.d();
+
+        let v = (self.reg(t) as i32) >> i;
+
+        self.set_reg(d, v as u32);
+    }
+
+    fn op_srl(&mut self, instruction: Instruction) {
+        let i: u32 = instruction.shift();
+        let t: RegisterIndex = instruction.t();
+        let d: RegisterIndex = instruction.d();
+
+        let v = self.reg(t) >> i;
+
+        self.set_reg(d, v);
     }
 
     fn op_addiu(&mut self, instruction: Instruction) {
@@ -283,17 +311,28 @@ impl Cpu {
         let i = instruction.imm_se();
         let s = instruction.s();
         let instruction = instruction.0;
-
         let is_bgez = (instruction >> 16) & 1;
         let is_link = (instruction >> 20) & 1 != 0;
-        let _is_link = (instruction >> 20) & 1;
-
         let v = self.reg(s) as i32;
-
         let test = (v < 0) as u32;
-
         let test = test ^ is_bgez;
 
+        /*
+           Basically just a xor table
+
+           First case:
+               v -> 123, test = 0, is_bgez = 1
+               test = 1
+           Second example:
+               v -> -1, test = 1, is_bgez = 1
+               test = 0
+           Third example:
+               v -> 123, test = 0, is_bgez = 0
+               test = 0
+           Fourth example:
+               v -> -1, test = 1, is_bgez = 0
+               test = 1
+        */
         if test != 0 {
             if is_link {
                 let ra = self.pc;
@@ -333,6 +372,67 @@ impl Cpu {
         };
 
         self.set_reg(d, v);
+    }
+
+    fn op_subu(&mut self, instruction: Instruction) {
+        let d = instruction.d();
+        let s = instruction.s();
+        let t = instruction.t();
+
+        let v = self.reg(s).wrapping_sub(self.reg(t));
+
+        self.set_reg(d, v);
+    }
+
+    fn op_div(&mut self, instruction: Instruction) {
+        let s = instruction.s();
+        let t = instruction.t();
+
+        let n = self.reg(s) as i32;
+        let d = self.reg(t) as i32;
+
+        if n == 0 {
+            self.hi = n as u32;
+            if n >= 0 {
+                self.lo = 0xffff_ffff;
+            } else {
+                self.lo = 1;
+            }
+        } else if n as u32 == 0x8000_0000 && d == -1 {
+            self.hi = 0;
+            self.lo = 0x80000000;
+        } else {
+            self.hi = (n % d) as u32;
+            self.lo = (n / d) as u32;
+        }
+    }
+
+    fn op_divu(&mut self, instruction: Instruction) {
+        let s = instruction.s();
+        let t = instruction.t();
+
+        let n = self.reg(s);
+        let d = self.reg(t);
+
+        if d == 0 {
+            self.hi = n;
+            self.lo = 0xffffffff;
+        } else {
+            self.hi = n % d;
+            self.lo = n / d;
+        }
+    }
+
+    fn op_mflo(&mut self, instruction: Instruction) {
+        let d = instruction.d();
+        let lo = self.lo;
+        self.set_reg(d, lo);
+    }
+
+    fn op_mfhi(&mut self, instruction: Instruction) {
+        let d = instruction.d();
+        let hi = self.hi;
+        self.set_reg(d, hi);
     }
 
     fn op_lw(&mut self, instruction: Instruction) {
@@ -381,6 +481,18 @@ impl Cpu {
         self.load = (t, v as u32);
     }
 
+    fn op_slt(&mut self, instruction: Instruction) {
+        let d = instruction.d();
+        let s = instruction.s();
+        let t = instruction.t();
+
+        let s = self.reg(s) as i32;
+        let t = self.reg(t) as i32;
+
+        let v = s < t;
+        self.set_reg(d, v as u32);
+    }
+
     fn op_sltu(&mut self, instruction: Instruction) {
         let d = instruction.d();
         let s = instruction.s();
@@ -396,6 +508,16 @@ impl Cpu {
         let t = instruction.t();
 
         let v = (self.reg(s) as i32) < i;
+
+        self.set_reg(t, v as u32);
+    }
+
+    fn op_sltiu(&mut self, instruction: Instruction) {
+        let i = instruction.imm_se();
+        let s = instruction.s();
+        let t = instruction.t();
+
+        let v = self.reg(s) < i;
 
         self.set_reg(t, v as u32);
     }
@@ -471,11 +593,19 @@ impl Cpu {
                 0b000000 => self.op_sll(instruction),
                 0b100101 => self.op_or(instruction),
                 0b101011 => self.op_sltu(instruction),
+                0b101010 => self.op_slt(instruction),
                 0b100001 => self.op_addu(instruction),
                 0b001000 => self.op_jr(instruction),
                 0b001001 => self.op_jalr(instruction),
                 0b100100 => self.op_and(instruction),
                 0b100000 => self.op_add(instruction),
+                0b100011 => self.op_subu(instruction),
+                0b000011 => self.op_sra(instruction),
+                0b000010 => self.op_srl(instruction),
+                0b011010 => self.op_div(instruction),
+                0b010010 => self.op_mflo(instruction),
+                0b010000 => self.op_mfhi(instruction),
+                0b011011 => self.op_divu(instruction),
                 _ => panic!(
                     "Unhandled instruction {:08X} at PC -> {:04X}",
                     instruction.0, self.pc
@@ -501,6 +631,7 @@ impl Cpu {
             0b000110 => self.op_blez(instruction),
             0b000001 => self.op_bxx(instruction),
             0b001010 => self.op_slti(instruction),
+            0b001011 => self.op_sltiu(instruction),
             _ => panic!(
                 "Unhandled instruction {:08X} at PC -> {:04X}",
                 instruction.0, self.pc

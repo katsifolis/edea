@@ -46,6 +46,12 @@ impl Interconnect {
         if let Some(offset) = map::RAM.contains(absolute_addr) {
             return self.ram.load32(offset);
         }
+
+        if let Some(offset) = map::IRQ_CONTROL.contains(absolute_addr) {
+            println!("IRQ control read: {:08X}", offset);
+            return 0;
+        }
+
         panic!(
             "unhandled fetch32 at absolute_address {:08X}",
             absolute_addr
@@ -76,6 +82,11 @@ impl Interconnect {
 
         if let Some(offset) = map::SPU.contains(absolute_addr) {
             println!("Unhandled write to SPU Register {:X}", offset);
+            return;
+        }
+
+        if let Some(offset) = map::TIMERS.contains(absolute_addr) {
+            println!("Unhandled write to timer register {:X}", offset);
             return;
         }
 
