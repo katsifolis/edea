@@ -5,6 +5,7 @@ use std::{
 };
 
 /// BIOS
+#[derive(Debug)]
 pub struct Bios {
     data: Vec<u8>,
 }

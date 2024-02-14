@@ -1,8 +1,18 @@
 use std::fmt::{Display, Formatter};
 
 use crate::interconnect::Interconnect;
+
+#[derive(Debug)]
 pub struct Cpu {
+    /// Register pinpointing the next instruction
     pc: u32,
+
+    /// Next value of program counter, used to simulate
+    /// the branch delay slot
+    next_pc: u32,
+
+    /// Address of the currently run instruction. Used for EPC
+    current_pc: u32,
 
     /// Cop 0 register 12: Status Register
     sr: u32,
@@ -12,6 +22,12 @@ pub struct Cpu {
 
     /// Low register for div quotient and mul low result
     lo: u32,
+
+    /// Cop0 register 13: Cause Register
+    cause: u32,
+
+    /// Cop0 register 14: EPC
+    epc: u32,
 
     /// Next Instruction To be executed
     /// simulating the way ps1 works (branch delay slot)
@@ -31,20 +47,26 @@ pub struct Cpu {
     inter: Interconnect,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 struct RegisterIndex(u32);
-
+/// Exception types from CAUSE Register
 impl Cpu {
     pub fn new(inter: Interconnect) -> Cpu {
         let mut regs = [0xdeadbeef; 32];
 
         regs[0] = 0;
 
+        let pc: u32 = 0xBFC0_0000;
+
         Cpu {
-            pc: 0xBFC00000,
+            pc,
+            next_pc: pc.wrapping_add(4),
+            current_pc: 0x0,
             sr: 0,
             hi: 0xcafecafe,
             lo: 0xcafecafe,
+            cause: 0x0,
+            epc: 0x0,
             next_instruction: Instruction(0x0),
             inter,
             out_regs: regs,
@@ -63,10 +85,14 @@ impl Cpu {
     }
 
     pub fn run_next_instruction(&mut self) {
-        let pc = self.pc;
-        let instruction = self.next_instruction;
-        self.next_instruction = Instruction(self.load32(pc));
-        self.pc = pc.wrapping_add(4);
+        //let instruction = self.next_instruction;
+        //self.next_instruction = Instruction(self.load32(pc));
+
+        let instruction = Instruction(self.load32(self.pc));
+
+        self.current_pc = self.pc;
+        self.pc = self.next_pc;
+        self.next_pc = self.next_pc.wrapping_add(4);
 
         // Execute the pending load (if any, otherwise it will load
         // $zero which is NOP). `set_reg` works only on `out_regs` so
@@ -201,9 +227,10 @@ impl Cpu {
         self.set_reg(d, v);
     }
 
+    // Jump
     fn op_j(&mut self, instruction: Instruction) {
         let i: u32 = instruction.imm_jump();
-        self.pc = (self.pc & 0xF0000000) | (i << 2);
+        self.next_pc = (self.next_pc & 0xF0000000) | (i << 2);
     }
 
     fn op_cop0(&mut self, instruction: Instruction) {
@@ -243,11 +270,51 @@ impl Cpu {
 
         let v = match cop_r {
             12 => self.sr,
-            13 => panic!("Unhandled read from CAUSE register"),
+            13 => self.cause,
+            14 => self.epc,
             _ => panic!("Unhandled read from cop0{}", cop_r),
         };
 
         self.load = (cpu_r, v);
+    }
+
+    //fn exception(&mut self, cause: Exception) {
+    //    let handler = match self.sr & (1 << 22) != 0 {
+    //        true => 0xbfc00180,
+    //        false => 0x80000080,
+    //    };
+
+    //    let mode = self.sr & 0x3f;
+    //    self.sr &= !0x3f;
+    //    self.sr |= (mode << 2) & 0x3f;
+
+    //    self.cause = (cause as u32) << 2;
+
+    //    self.epc = self.current_pc;
+
+    //    self.pc = handler;
+    //    self.next_pc = self.pc.wrapping_add(4);
+
+    //}
+
+    fn exception(&mut self, cause: Exception) {
+        let handler = match self.sr & (1 << 22) != 0 {
+            true => 0xbfc00180,
+            false => 0x80000080,
+        };
+
+        let mode = self.sr & 0x3f;
+        self.sr &= !0x3f;
+        self.sr |= (mode << 2) & 0x3f;
+
+        self.epc = self.current_pc;
+
+        self.pc = handler;
+        self.next_pc = self.pc.wrapping_add(4);
+    }
+
+    fn op_syscall(&mut self, _: Instruction) {
+        self.exception(Exception::SysCall);
     }
 
     /// Branch to immediate value `offset`.
@@ -256,13 +323,14 @@ impl Cpu {
         // since `PC` addresses have to be aligned on 32bits at all time.
         let offset = offset << 2;
 
-        let mut pc = self.pc;
+        // Here we set the next_pc to compensate for the syscalls
+        let mut pc = self.next_pc;
 
         pc = pc.wrapping_add(offset);
 
         pc = pc.wrapping_sub(4);
 
-        self.pc = pc;
+        self.next_pc = pc;
     }
 
     fn op_bne(&mut self, instruction: Instruction) {
@@ -335,7 +403,7 @@ impl Cpu {
         */
         if test != 0 {
             if is_link {
-                let ra = self.pc;
+                let ra = self.next_pc;
 
                 self.set_reg(RegisterIndex(31), ra);
             }
@@ -429,10 +497,20 @@ impl Cpu {
         self.set_reg(d, lo);
     }
 
+    fn op_mtlo(&mut self, instruction: Instruction) {
+        let s = instruction.s();
+        self.lo = self.reg(s);
+    }
+
     fn op_mfhi(&mut self, instruction: Instruction) {
         let d = instruction.d();
         let hi = self.hi;
         self.set_reg(d, hi);
+    }
+
+    fn op_mthi(&mut self, instruction: Instruction) {
+        let s = instruction.s();
+        self.hi = self.reg(s);
     }
 
     fn op_lw(&mut self, instruction: Instruction) {
@@ -549,7 +627,7 @@ impl Cpu {
 
     /// Jump and link
     fn op_jal(&mut self, instruction: Instruction) {
-        let ra = self.pc;
+        let ra = self.next_pc;
         // Store return address to $ra
         self.set_reg(RegisterIndex(31), ra);
         self.op_j(instruction);
@@ -558,18 +636,18 @@ impl Cpu {
     /// Jump register
     fn op_jr(&mut self, instruction: Instruction) {
         let s = instruction.s();
-        self.pc = self.reg(s);
+        self.next_pc = self.reg(s);
     }
 
     /// Jump and link register
     fn op_jalr(&mut self, instruction: Instruction) {
         let s = instruction.s();
         let d = instruction.d();
-        let ra = self.pc;
+        let ra = self.next_pc;
 
         self.set_reg(d, ra);
 
-        self.pc = self.reg(s);
+        self.next_pc = self.reg(s);
     }
 
     fn op_sb(&mut self, instruction: Instruction) {
@@ -604,8 +682,11 @@ impl Cpu {
                 0b000010 => self.op_srl(instruction),
                 0b011010 => self.op_div(instruction),
                 0b010010 => self.op_mflo(instruction),
+                0b010011 => self.op_mtlo(instruction),
                 0b010000 => self.op_mfhi(instruction),
+                0b010001 => self.op_mthi(instruction),
                 0b011011 => self.op_divu(instruction),
+                0b001100 => self.op_syscall(instruction),
                 _ => panic!(
                     "Unhandled instruction {:08X} at PC -> {:04X}",
                     instruction.0, self.pc
@@ -640,7 +721,7 @@ impl Cpu {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Instruction(u32);
 
 impl Instruction {
@@ -684,6 +765,10 @@ impl Instruction {
     fn cop_opcode(self) -> u32 {
         (self.0 >> 21) & 0x1f
     }
+}
+
+enum Exception {
+    SysCall = 0x8,
 }
 
 impl Display for Instruction {

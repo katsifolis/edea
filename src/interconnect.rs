@@ -4,6 +4,7 @@ use crate::{
     ram::Ram,
 };
 
+#[derive(Debug)]
 pub struct Interconnect {
     bios: Bios,
     ram: Ram,

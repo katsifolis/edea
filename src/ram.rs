@@ -1,6 +1,7 @@
 use std::{default, fmt::Error};
 
 /// RAM
+#[derive(Debug)]
 pub struct Ram {
     data: Vec<u8>,
 }
