@@ -29,6 +29,13 @@ pub struct Cpu {
     /// Cop0 register 14: EPC
     epc: u32,
 
+    /// Flag set by the current instr if a branch happened
+    /// and the next instr will be in the branch delay slot
+    branch: bool,
+
+    // If current instr executes in the context of a delay slot
+    delay_slot: bool,
+
     /// Next Instruction To be executed
     /// simulating the way ps1 works (branch delay slot)
     next_instruction: Instruction,
@@ -67,6 +74,8 @@ impl Cpu {
             lo: 0xcafecafe,
             cause: 0x0,
             epc: 0x0,
+            branch: false,
+            delay_slot: false,
             next_instruction: Instruction(0x0),
             inter,
             out_regs: regs,
@@ -89,8 +98,15 @@ impl Cpu {
         //self.next_instruction = Instruction(self.load32(pc));
 
         let instruction = Instruction(self.load32(self.pc));
+        self.delay_slot = self.branch;
+        self.branch = false;
 
         self.current_pc = self.pc;
+        if self.current_pc % 4 != 0 {
+            self.exception(Exception::LoadAdressError);
+            return;
+        }
+
         self.pc = self.next_pc;
         self.next_pc = self.next_pc.wrapping_add(4);
 
@@ -170,7 +186,12 @@ impl Cpu {
 
         let addr = self.reg(s).wrapping_add(i);
         let val = self.reg(t);
-        self.store32(addr, val);
+
+        if addr % 4 == 0 {
+            self.store32(addr, val);
+        } else {
+            self.exception(Exception::StoreAdressError);
+        }
     }
 
     fn op_sll(&mut self, instruction: Instruction) {
@@ -230,6 +251,7 @@ impl Cpu {
     // Jump
     fn op_j(&mut self, instruction: Instruction) {
         let i: u32 = instruction.imm_jump();
+        self.branch = true;
         self.next_pc = (self.next_pc & 0xF0000000) | (i << 2);
     }
 
@@ -237,6 +259,7 @@ impl Cpu {
         match instruction.cop_opcode() {
             0b00100 => self.op_mtc0(instruction),
             0b00000 => self.op_mfc0(instruction),
+            0b10000 => self.op_rfe(instruction),
             _ => panic!("Unhandled cop0 instruction {}", instruction),
         }
     }
@@ -278,24 +301,18 @@ impl Cpu {
         self.load = (cpu_r, v);
     }
 
-    //fn exception(&mut self, cause: Exception) {
-    //    let handler = match self.sr & (1 << 22) != 0 {
-    //        true => 0xbfc00180,
-    //        false => 0x80000080,
-    //    };
+    /// Op: Return From Exception
+    fn op_rfe(&mut self, instruction: Instruction) {
+        // Virtual memory instructions which are not implemented in the PS1
+        if instruction.0 & 0x3f != 0b010000 {
+            panic!("Invalid cop0 instruction {}", instruction)
+        }
 
-    //    let mode = self.sr & 0x3f;
-    //    self.sr &= !0x3f;
-    //    self.sr |= (mode << 2) & 0x3f;
-
-    //    self.cause = (cause as u32) << 2;
-
-    //    self.epc = self.current_pc;
-
-    //    self.pc = handler;
-    //    self.next_pc = self.pc.wrapping_add(4);
-
-    //}
+        // Restore the mode from the exception op
+        let mode = self.sr & 0x3f;
+        self.sr &= !0x3f;
+        self.sr |= mode >> 2;
+    }
 
     fn exception(&mut self, cause: Exception) {
         let handler = match self.sr & (1 << 22) != 0 {
@@ -307,9 +324,19 @@ impl Cpu {
         self.sr &= !0x3f;
         self.sr |= (mode << 2) & 0x3f;
 
+        self.cause = (cause as u32) << 2;
+
         self.epc = self.current_pc;
 
+        if self.delay_slot {
+            // When exception happens in a delay slot EPC points to the branch instruction
+            // and CAUSE register's 31 bit is set
+            self.epc = self.epc.wrapping_sub(4);
+            self.cause |= 1 << 31;
+        }
+
         self.pc = handler;
+
         self.next_pc = self.pc.wrapping_add(4);
     }
 
@@ -319,6 +346,7 @@ impl Cpu {
 
     /// Branch to immediate value `offset`.
     fn branch(&mut self, offset: u32) {
+        self.branch = true;
         // Offset immediates are always shifted two places to the right
         // since `PC` addresses have to be aligned on 32bits at all time.
         let offset = offset << 2;
@@ -418,12 +446,10 @@ impl Cpu {
 
         let s = self.reg(s) as i32;
 
-        let v = match s.checked_add(i) {
-            Some(v) => v as u32,
-            None => panic!("ADDI Overflow"),
-        };
-
-        self.set_reg(t, v);
+        match s.checked_add(i) {
+            Some(v) => self.set_reg(t, v as u32),
+            None => self.exception(Exception::Overflow),
+        }
     }
 
     fn op_add(&mut self, instruction: Instruction) {
@@ -434,12 +460,10 @@ impl Cpu {
         let s = self.reg(s) as i32;
         let t = self.reg(t) as i32;
 
-        let v = match s.checked_add(t) {
-            Some(v) => v as u32,
-            None => panic!("ADD Overflow"),
-        };
-
-        self.set_reg(d, v);
+        match s.checked_add(t) {
+            Some(v) => self.set_reg(d, v as u32),
+            None => self.exception(Exception::Overflow),
+        }
     }
 
     fn op_subu(&mut self, instruction: Instruction) {
@@ -525,9 +549,12 @@ impl Cpu {
 
         let addr = self.reg(s).wrapping_add(i);
 
-        let v = self.load32(addr);
-
-        self.load = (t, v);
+        if addr % 4 == 0 {
+            let v = self.load32(addr);
+            self.load = (t, v);
+        } else {
+            self.exception(Exception::LoadAdressError);
+        }
     }
 
     fn op_lb(&mut self, instruction: Instruction) {
@@ -622,11 +649,16 @@ impl Cpu {
 
         let addr = self.reg(s).wrapping_add(i);
         let val = self.reg(t);
-        self.store16(addr, val as u16);
+        if addr % 2 == 0 {
+            self.store16(addr, val as u16);
+        } else {
+            self.exception(Exception::StoreAdressError);
+        }
     }
 
     /// Jump and link
     fn op_jal(&mut self, instruction: Instruction) {
+        self.branch = true;
         let ra = self.next_pc;
         // Store return address to $ra
         self.set_reg(RegisterIndex(31), ra);
@@ -635,12 +667,14 @@ impl Cpu {
 
     /// Jump register
     fn op_jr(&mut self, instruction: Instruction) {
+        self.branch = true;
         let s = instruction.s();
         self.next_pc = self.reg(s);
     }
 
     /// Jump and link register
     fn op_jalr(&mut self, instruction: Instruction) {
+        self.branch = true;
         let s = instruction.s();
         let d = instruction.d();
         let ra = self.next_pc;
@@ -696,11 +730,7 @@ impl Cpu {
             0b001101 => self.op_ori(instruction),
             0b101011 => self.op_sw(instruction),
             0b001001 => self.op_addiu(instruction),
-            0b000010 => self.op_j(instruction),
-            0b000011 => self.op_jal(instruction),
             0b010000 => self.op_cop0(instruction),
-            0b000101 => self.op_bne(instruction),
-            0b000100 => self.op_beq(instruction),
             0b001000 => self.op_addi(instruction),
             0b100011 => self.op_lw(instruction),
             0b101001 => self.op_sh(instruction),
@@ -708,6 +738,10 @@ impl Cpu {
             0b101000 => self.op_sb(instruction),
             0b100000 => self.op_lb(instruction),
             0b100100 => self.op_lbu(instruction),
+            0b000010 => self.op_j(instruction),
+            0b000011 => self.op_jal(instruction),
+            0b000101 => self.op_bne(instruction),
+            0b000100 => self.op_beq(instruction),
             0b000111 => self.op_bgtz(instruction),
             0b000110 => self.op_blez(instruction),
             0b000001 => self.op_bxx(instruction),
@@ -767,8 +801,12 @@ impl Instruction {
     }
 }
 
-enum Exception {
+#[derive(Clone, Copy, Debug)]
+pub enum Exception {
     SysCall = 0x8,
+    Overflow = 0xc,
+    LoadAdressError = 0x4,
+    StoreAdressError = 0x5,
 }
 
 impl Display for Instruction {
